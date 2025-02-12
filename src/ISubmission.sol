@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.10;
 
-/// @title IGovernance Interface
-/// @notice Interface for the Governance contract handling staking, voting, and reward distribution.
-interface IGovernance {
+import { IGovernance } from "./IGovernance.sol";
+
+/// @title ISubmission Interface
+/// @notice Interface for the submission registering and rewards distribution.
+interface ISubmission {
 
     // @notice Used to organize the returned information 
     struct GovernorStake {
@@ -13,7 +15,7 @@ interface IGovernance {
 
     struct SubmissionReward {
         address submission;
-        uint256 reward;
+        uint256 rew;
     }
 
     /// @notice Sets the token contract address
@@ -51,7 +53,7 @@ interface IGovernance {
 
     /// @notice Distributes rewards to stakers based on their stake votes
     /// @param amount The total amount of rewards to distribute
-    function distributeRewards(uint256 amount) external;
+    function distributeRewards(IGovernance.SubmissionReward[] calldata rewards, uint256 totalVote, uint256 amount) external;
 
     /// @notice Allows a staker to claim their rewards
     function claimReward() external;
@@ -64,7 +66,5 @@ interface IGovernance {
     /// @param N The number of top governors to return
     /// @return governors An array of governor addresses and their total stakes
     function getTopGovernorsByStake(uint256 N) external view returns (GovernorStake[] memory governors);
-
-    function getSubmissionRewards() external view returns(SubmissionReward[] memory, uint256 total);
 }
 

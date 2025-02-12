@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import { IGovernance } from "./IGovernance.sol";
+import { ISubmission } from "./ISubmission.sol";
 
 /// @title ZuvuToken
 /// @author BeAWhale
@@ -19,10 +20,10 @@ contract ZuvuToken is ERC20, Ownable {
     IGovernance public governance;
     bool isGovernanceSet = false;
 
-    event RewardsMinted(uint256 totalMinted, uint256 rewardAmount, uint256 burnAmount);
+    ISubmission public submission;
+    bool isSubmissionSet = false;
 
     modifier governanceContractSet() {
-        require(isGovernanceSet, "Governance contract not set");
         _;
     }
 
@@ -39,28 +40,41 @@ contract ZuvuToken is ERC20, Ownable {
         governance = IGovernance(a); 
     }
 
+    /// @notice Sets the governance contract address
+    /// @dev Can only be called by the owner and only once
+    /// @param a The address of the governance contract
+    function setSubmissionContract(address a) public onlyOwner {
+        require(isSubmissionSet == false, "Submission contract already set");
+        isSubmissionSet = true;
+        submission = ISubmission(a); 
+    }
+
     /// @notice Mints rewards and distributes them to stakers
     /// @dev Can only be called after the minting interval has passed
     function mintRewards() external governanceContractSet() {
+        require(isGovernanceSet, "Governance contract not set");
+        require(isSubmissionSet, "Submission contract not set");
+
         require(block.timestamp >= lastMintTimestamp + MINT_INTERVAL, "Minting interval not passed");
         uint256 mints = 1; 
         //uint256 mints = (block.timestamp - lastMintTimestamp) / MINT_INTERVAL; // If more than one mint interval passed, calculate how many mints could've happened
 
         uint256 mintAmount = MINT_AMOUNT * mints * 10 ** decimals();
 
-        uint256 rewardPercentage = governance.getStakeVote();
-        uint256 rewardAmount = (mintAmount * rewardPercentage) / 100;
-        uint256 burnAmount = mintAmount - rewardAmount;
+        uint256 stakeVote = governance.getStakeVote();
+        (IGovernance.SubmissionReward[] memory submisssionRewards, uint256 submissionVote) = governance.getSubmissionRewards();
+      
+        uint256 rewardStake = (mintAmount * stakeVote) / (stakeVote + submissionVote);
+        uint256 rewardSubmission = (mintAmount * submissionVote) / (stakeVote + submissionVote); 
 
-        _mint(address(governance), rewardAmount); // Mint to governance contract for distribution
-        _mint(address(this), burnAmount);
-        _burn(address(this), burnAmount);   // Burn the rest
+        _mint(address(governance), rewardStake); // Mint to governance contract for distribution
+        _mint(address(submission), rewardSubmission);
 
-        // Distribute rewards to stakers via Governance
-        governance.distributeRewards(rewardAmount);
+        // Distribute rewards to stakers via Governance contract
+        governance.distributeRewards(rewardStake);
+        // Distribute rewards to submissions via Submission contract 
+        submission.distributeRewards(submisssionRewards, submissionVote, rewardSubmission);
 
         lastMintTimestamp = block.timestamp;
-
-        emit RewardsMinted(mintAmount, rewardAmount, burnAmount);
     }
 }

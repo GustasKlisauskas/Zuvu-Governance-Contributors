@@ -2,9 +2,11 @@
 pragma solidity ^0.8.10;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 
 import { IGovernance } from './IGovernance.sol';
 import { IZuvuToken } from "./IZuvuToken.sol";
+import { console } from "forge-std/Test.sol";
 
 /// @title ZUV Governance Contract
 /// @author BeAWhale
@@ -17,7 +19,8 @@ contract Governance is IGovernance, Ownable {
     
     struct Vote {
         uint8 stake;
-        SubmissionVote[] submissions;
+        mapping(address => uint8) submissionVotes;
+        address[] submissions;
     }
 
     // Used internally to aid with sorting 
@@ -27,19 +30,20 @@ contract Governance is IGovernance, Ownable {
         uint256 totalStake;
     }
     
-    //TODO: needs a submission contract.
-    struct SubmissionVote {
-        uint256 id;
-        uint8 percent;
-    }
-
     struct GovernorMetadata {
         string name;
         string url;
     }
+    
+    // Used internally when sorting the governance votes
+    struct GovernorVoteInfo {
+        address governor;
+        uint256 totalStake;
+        uint8 submissionVote;
+    }
 
-    mapping(address => uint256) governorsIds; // Maps governor address to their ID
-    mapping(uint256 => address) governors;    // Maps ID to governor address
+    mapping(address => uint256) public governorIds; // Maps governor address to their ID
+    mapping(uint256 => address) public governors;    // Maps ID to governor address
     uint256 public governorLength = 0;      // Total number of governors
 
     mapping(address => Vote) public votes;    // Maps governor address to their vote
@@ -47,7 +51,8 @@ contract Governance is IGovernance, Ownable {
     mapping(address => GovernorMetadata) public governorMetadata; // Maps governor address to their metadata
     mapping(address => uint256) public stakerRewards; // Maps staker rewards which can be claimed later
 
-    IZuvuToken public tokenAddress;
+    IZuvuToken public zuvuToken;
+
     bool tokenAddressSet = false;
     bool killSwitch = false;
 
@@ -57,12 +62,12 @@ contract Governance is IGovernance, Ownable {
     }
 
     modifier onlyTokenContract() {
-        require(msg.sender == address(tokenAddress), "Caller is not the token contract");
+        require(msg.sender == address(zuvuToken), "Caller is not the token contract");
         _;
     }
 
     modifier isGovernor(address governor) {
-        require(governorsIds[governor] != 0, "Governor not registered");
+        require(governorIds[governor] != 0, "Governor not registered");
         _;
     }
 
@@ -79,7 +84,7 @@ contract Governance is IGovernance, Ownable {
     /// @param token The address of the ZuvuToken contract
     function setTokenAddress(address token) public onlyOwner {
         require(!tokenAddressSet, "Token address already set");
-        tokenAddress = IZuvuToken(token);
+        zuvuToken = IZuvuToken(token);
         tokenAddressSet = true;
     }
 
@@ -91,9 +96,9 @@ contract Governance is IGovernance, Ownable {
     /// @notice Registers the caller as a governor
     /// @dev Governors can vote and participate in governance
     function registerGovernor() public ks {
-        require(governorsIds[msg.sender] == 0, "Governor already registered");
+        require(governorIds[msg.sender] == 0, "Governor already registered");
         governorLength++;
-        governorsIds[msg.sender] = governorLength;
+        governorIds[msg.sender] = governorLength;
         governors[governorLength] = msg.sender;
     }
 
@@ -110,18 +115,19 @@ contract Governance is IGovernance, Ownable {
     /// @notice Unregisters the caller as a governor
     /// @dev Removes the caller from the list of governors
     function unregisterGovernor() public isGovernor(msg.sender) ks {
-        uint256 governorId = governorsIds[msg.sender];
+        uint256 governorId = governorIds[msg.sender];
 
         // Swap the last governor with the one being removed
         if (governorId != governorLength) {
             address lastGovernor = governors[governorLength];
             governors[governorId] = lastGovernor;
-            governorsIds[lastGovernor] = governorId;
+            governorIds[lastGovernor] = governorId;
         }
 
         // Delete the governor from the mappings
-        delete governorsIds[msg.sender];
+        delete governorIds[msg.sender];
         delete governors[governorLength];
+        delete governorMetadata[msg.sender];
 
         // Decrease the length
         governorLength--;
@@ -157,10 +163,10 @@ contract Governance is IGovernance, Ownable {
         // Do the transfer
         if (difference > 0) {
             // If the new stake is higher, transfer the difference from the staker to this contract
-            require(tokenAddress.transferFrom(msg.sender, address(this), uint256(difference)), "Transfer failed");
+            require(zuvuToken.transferFrom(msg.sender, address(this), uint256(difference)), "Transfer failed");
         } else if (difference < 0) {
             // If the new stake is lower, transfer the difference back to the staker
-            require(tokenAddress.transfer(msg.sender, uint256(-difference)), "Transfer failed");
+            require(zuvuToken.transfer(msg.sender, uint256(-difference)), "Transfer failed");
         }
     }
 
@@ -181,34 +187,155 @@ contract Governance is IGovernance, Ownable {
     /// @dev The vote must be a percentage (0-100)
     /// @param stakeVote The percentage vote for the governor's stake
     function voteStake(uint8 stakeVote) public isPercentage(stakeVote) isGovernor(msg.sender) ks {
-        require(governorsIds[msg.sender] != 0, "Governor not registered");
+        require(governorIds[msg.sender] != 0, "Governor not registered");
         votes[msg.sender].stake = stakeVote;
     }
 
     /// @notice Casts a vote for a submission
     /// @dev Updates the vote if it already exists; otherwise, creates a new vote
-    /// @param governor The address of the governor
-    /// @param submissionId The ID of the submission
-    /// @param submissionVote The percentage vote for the submission
-    function voteForSubmission(address governor, uint256 submissionId, uint8 submissionVote) public isPercentage(submissionVote) isGovernor(governor) ks {
-        Vote storage governorVote = votes[governor];
-        bool found = false;
+    /// @param submission The address of the submission
+    /// @param submissionVote The percentage vote for the submission. If set to 0, vote is removed via swap-pop
+    // TODO: check if submission is valid one
+    function voteForSubmission(address submission, uint8 submissionVote) public isPercentage(submissionVote) isGovernor(msg.sender) ks {
+        Vote storage governorVote = votes[msg.sender];
+        int256 idx = -1;
+        uint32 otherSubmissionsTotalVote = 0;
 
         // Check if the submission already exists
         for (uint256 i = 0; i < governorVote.submissions.length; i++) {
-            if (governorVote.submissions[i].id == submissionId) {
-                governorVote.submissions[i].percent = submissionVote;
-                found = true;
-                break;
+            if (governorVote.submissions[i] == submission) {
+                idx = int256(i);
+            }else{
+                require(governorVote.submissionVotes[governorVote.submissions[i]] > 0, "THIS ASSERT SHOULD NEVER HAPPEN");
+                // don't count the submission that we're changing
+                otherSubmissionsTotalVote += governorVote.submissionVotes[submission];
             }
         }
 
-        // If the submission doesn't exist, add it
-        if (!found) {
-            governorVote.submissions.push(SubmissionVote({id: submissionId, percent: submissionVote}));
+        //TODO: check if needed and remove when deploying
+        if(otherSubmissionsTotalVote > 100) {
+            killSwitch = true;
+            revert("THIS ASSERT SHOULD NEVER HAPPEN, TOTAL SUBMISION VOTE SHOULD NEVER BE > 100");
         }
-    }
 
+        require(otherSubmissionsTotalVote + submissionVote <= 100, "The total submision vote would exceed 100%");
+        
+        if(submissionVote > 0) {
+            if (idx == -1) {
+                governorVote.submissions.push(submission);
+                governorVote.submissionVotes[submission] = submissionVote;
+            }else{
+                governorVote.submissionVotes[submission] = submissionVote;
+            }
+        }else{
+            // remove submission via switch-pop
+            if (idx != -1){
+                address lastSubmission = governorVote.submissions[governorVote.submissions.length - 1];
+                governorVote.submissions[uint256(idx)] = lastSubmission;
+                governorVote.submissions.pop();
+                delete governorVote.submissionVotes[submission];
+            }else{
+                revert("Tried to set vote for non voted submission");
+            }
+       }
+    }
+    
+    /// @notice get's a list of submissions that the top governors voted for
+    /// @dev loops governors, loops their votes, adds submissions to array, checks if the submission was seen.
+    function getTopSubmissions() public view returns(address[] memory) {
+        uint256 topGovernorAmount = Math.min(64, governorLength);
+        uint256 maxSubmissionCount = topGovernorAmount * 10;
+        uint256 seenSubmissionCount = 0;
+        GovernorStake[] memory topGovernors = getTopGovernorsByStake(topGovernorAmount);
+        address[] memory seenSubmissions = new address[](maxSubmissionCount); // Max percent -> 10% thus max amount of different submissions that can be voted by top governors is 64 * 100
+        
+        for(uint256 i = 0; i < topGovernorAmount; i++) {
+            address[] memory v = votes[topGovernors[i].governor].submissions;
+            for(uint256 j = 0; j < v.length; j++) {
+                address submission = v[j];
+                for(uint256 k = 0; k <= seenSubmissionCount && k < maxSubmissionCount; k++) {
+                    // horrible n^3 complexity, is limited by top governor legth and vote amount for governor
+                    // if the submission has been encountered, we can safely break
+                    if(seenSubmissions[k] == submission) {
+                        break; 
+                    }
+                    // if it hasn't add it to the list
+                    if(k == seenSubmissionCount) {
+                        seenSubmissions[k] = submission;
+                        seenSubmissionCount++;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Just copy to result array, so we can minimize allocated memory
+        address[] memory result = new address[](seenSubmissionCount);
+        for(uint256 i = 0; i < seenSubmissionCount; i++) {
+            result[i] = seenSubmissions[i];      
+        }
+
+        return result;
+    }
+    
+    /// @notice returns the submissions addresses with the weighted median vote for each of them.
+    /// @dev Very gas chugging. We'll need a better approach to scale.
+    /// explore better algos
+    /// explore precalculating some of the values
+    /// explore batching these calculations via iterators (lock the contract until the iteration finishes)
+    function getSubmissionRewards() external view returns(SubmissionReward[] memory, uint256 total) {
+        uint256 topGovernorAmount = Math.min(64, governorLength);
+        address[] memory topSubmissions = getTopSubmissions();
+        GovernorStake[] memory topGovernors = getTopGovernorsByStake(topGovernorAmount);
+        SubmissionReward[] memory rewards = new SubmissionReward[](topSubmissions.length);
+
+        uint256 totalVotePercentage = 0;
+
+        for(uint256 i = 0; i < topSubmissions.length; i++) {
+            address submission = topSubmissions[i];
+            uint256 totalStake = 0;
+            uint8 voteAmount = 0;
+            
+            // We need to find out which of the top governors voted for this submission
+            GovernorVoteInfo[] memory governorVotes = new GovernorVoteInfo[](topGovernorAmount);
+
+            for(uint8 j = 0; j < topGovernors.length; j++) {
+                address governor = topGovernors[j].governor; 
+                uint8 vote = votes[governor].submissionVotes[submission];
+
+                // If governor has voted for this submission, add their vote to the list
+                if(vote > 0) {
+                    totalStake += topGovernors[j].totalStake;
+                    governorVotes[voteAmount] = GovernorVoteInfo({governor: governor, submissionVote: vote, totalStake: topGovernors[j].totalStake});
+                    voteAmount++;
+                }
+            }
+
+            quickSortVotes(governorVotes, 0, int256(uint256(voteAmount) - 1)); 
+            
+            // Calculate the weighted median vote for the submission
+            uint256 halfTotalStake = totalStake/2;
+            uint256 accumulatedStake = 0;
+
+            for(uint j = 0; j < voteAmount; j++){
+                accumulatedStake += governorVotes[j].totalStake;
+                if(accumulatedStake >= halfTotalStake) {
+                    uint8 v = votes[governorVotes[j].governor].submissionVotes[submission];
+                    totalVotePercentage += v;
+
+                    rewards[i] = SubmissionReward({
+                        submission: submission,
+                        reward: v
+                    });        
+
+                    break;
+                }
+            }
+        }
+
+        return (rewards, totalVotePercentage);
+    }
+    
     /// @notice Gets the total stake across all governors
     /// @return The total stake across all governors
     function getTotalStake() public view returns (uint256) {
@@ -263,7 +390,7 @@ contract Governance is IGovernance, Ownable {
 
         uint256 reward = stakerRewards[msg.sender];
         stakerRewards[msg.sender] = 0;
-        tokenAddress.transfer(msg.sender, reward); 
+        zuvuToken.transfer(msg.sender, reward); 
     }
 
     /// @notice Returns the weighted median stake vote using governor total stake as weight
@@ -349,7 +476,7 @@ contract Governance is IGovernance, Ownable {
         }
 
         // Sort the governors by total stake (descending order)
-        quickSort(governorStakes, 0, int256(governorStakes.length - 1));
+        qsortStake(governorStakes, 0, int256(governorStakes.length - 1));
 
         // Prepare the result array with the top N governors
         GovernorStake[] memory topGovernors = new GovernorStake[](N);
@@ -361,7 +488,7 @@ contract Governance is IGovernance, Ownable {
     }
 
     /// @notice QuickSort implementation to sort GovernorStake array by totalStake (descending)
-    function quickSort(GovernorStake[] memory arr, int256 left, int256 right) internal pure {
+    function qsortStake(GovernorStake[] memory arr, int256 left, int256 right) internal pure {
         int256 i = left;
         int256 j = right;
         if (i == j) return;
@@ -375,7 +502,25 @@ contract Governance is IGovernance, Ownable {
                 j--;
             }
         }
-        if (left < j) quickSort(arr, left, j);
-        if (i < right) quickSort(arr, i, right);
+        if (left < j) qsortStake(arr, left, j);
+        if (i < right) qsortStake(arr, i, right);
+    }
+
+    function qsortVote(GovernorVoteInfo[] memory arr, int256 left, int256 right) internal pure {
+        int256 i = left;
+        int256 j = right;
+        if (i == j) return;
+        uint256 pivot = arr[uint256(left + (right - left) / 2)].submissionVote;
+        while (i <= j) {
+            while (arr[uint256(i)].submissionVote > pivot) i++;
+            while (pivot > arr[uint256(j)].submissionVote) j--;
+            if (i <= j) {
+                (arr[uint256(i)], arr[uint256(j)]) = (arr[uint256(j)], arr[uint256(i)]);
+                i++;
+                j--;
+            }
+        }
+        if (left < j) qsortVote(arr, left, j);
+        if (i < right) qsortVote(arr, i, right);
     }
 }
