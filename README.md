@@ -69,9 +69,10 @@ The Zuvu ecosystem is governed by three main smart contracts:
 2. **Governance.sol** – The governance hub where governors register, stake tokens, cast votes, and manage reward distribution.
 3. **Submission.sol** – *Work in Progress.* This contract will allow users to submit their AI agents and handle submission voting.
 
-In addition, there are two interfaces:
+In addition, there are three interfaces:
 - **IZuvuToken.sol** – Interface for the ZuvuToken contract.
 - **IGovernance.sol** – Interface for the Governance contract.
+- **ISubmission.sol** – Interface for the Submission contract.
 
 ---
 
@@ -85,6 +86,11 @@ The **ZuvuToken** contract implements an ERC20 token with additional functionali
 - **Reward Distribution:** A percentage of the minted tokens is allocated as rewards and distributed to stakers via the Governance contract.
 - **Burn Mechanism:** The remainder of the minted tokens (after rewards) is burned to reduce the overall token supply.
 - **Governance Integration:** The token contract must be connected to the Governance contract via the `setGovernanceContract` function. Reward minting is then performed through `mintRewards`.
+- **Reward Distribution:** When minting, the contract queries the Governance contract for the stake vote via `getStakeVote` and the Submission rewards via `getSubmissionRewards`. It calculates the reward allocation as follows:
+  - rewardStake = (mintAmount * stakeVote) / (stakeVote + submissionVote)
+  - rewardSubmission = (mintAmount * submissionVote) / (stakeVote + submissionVote)
+(Logic not explicitly burning tokens but instead minting tokens only for rewards and submission distribution.)
+
 
 ### Key Constants and Variables
 
@@ -230,7 +236,60 @@ The contract uses two custom quicksort implementations:
 
 ## 3. Submission.sol
 
-**Note:** This contract is currently a work in progress. It is planned to handle the submission of AI agents and facilitate voting on these submissions.
+## Overview
+
+The **Submission** contract manages AI agent submissions within the Zuvu ecosystem. It allows users to:
+
+1. **Register Submissions** by paying a fee.  
+2. **Set and Update Metadata** (name, URL).  
+3. **Collect and Distribute Rewards** allocated to submissions.  
+4. **Claim Rewards** after distribution.  
+5. **Enable or Disable Operations** using a kill switch for maintenance or emergencies.
+
+It must be linked to the **ZuvuToken** contract in order to receive tokens for submission-related rewards and to charge fees during registration.
+
+---
+
+### Key Functions
+
+- **setTokenAddress(address token)**
+  - _Purpose:_ Sets the token contract address (owner-only, one-time call).
+
+- **setKillSwitch(bool val)**
+  - _Purpose:_ Enables or disables operations via the `ks` (kill switch) modifier.
+
+- **registerSubmission()**
+  - _Purpose:_ Registers the caller as a new submission if they pay the required fee.
+  - _Mechanism:_  
+    - Checks that the submission is not already registered.  
+    - Verifies the caller’s ZUV balance covers `submissionFee`.  
+    - Calls `transferFrom` to collect the fee.  
+    - Increments `submissionLength` and updates `submissionIds` and `submissions`.
+
+- **setSubmissionMetadata(string calldata name, string calldata url)**
+  - _Purpose:_ Allows the submission owner to update their metadata (name and URL).
+
+- **unregisterSubmission()**
+  - _Purpose:_ Unregisters a submission, removing it from the contract’s tracking structures.
+  - _Mechanism:_  
+    - Swaps the entry with the last submission if not already last.  
+    - Deletes the mappings in `submissionIds`, `submissions`, and `submissionMetadata`.  
+    - Decrements `submissionLength`.
+
+- **distributeRewards(IGovernance.SubmissionReward[] memory rewards, uint256 totalVote, uint256 amount)**
+  - _Purpose:_ Distributes reward tokens among submissions proportionally to their `reward` share.
+  - _Access:_ Callable only by the ZuvuToken contract.
+  - _Mechanism:_  
+    - Iterates over each `SubmissionReward`.  
+    - Calculates individual rewards as `(rew.reward * amount) / totalVote`.  
+    - Accumulates results in `submissionRewards`.
+
+- **claimReward()**
+  - _Purpose:_ Allows submission owners to claim their accrued rewards.
+  - _Mechanism:_  
+    - Resets `submissionRewards[msg.sender]` to zero.  
+    - Transfers that amount of ZUV tokens to the caller.
+
 
 ---
 
@@ -267,6 +326,18 @@ Defines the external interface for the **Governance** contract. Key functions in
 - `claimReward()`
 - `getStakeVote()`
 - `getTopGovernorsByStake(uint256 N)`
+
+### ISubmission.sol
+
+Defines the external interface for the Submission contract. Key functions include:
+
+-    `setTokenAddress(address token)`
+-    `registerSubmission()`
+-    `setSubmissionMetadata(string calldata name, string calldata url)`
+-    `unregisterSubmission()`
+-    `distributeRewards(IGovernance.SubmissionReward[] calldata rewards, uint256 totalVote, uint256 amount)`
+-    `claimReward()`
+-    `setKillSwitch(bool val)`
 
 ---
 
