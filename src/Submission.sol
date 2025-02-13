@@ -49,7 +49,7 @@ contract Submission is Ownable {
     /// @dev Can only be called by the owner and only once
     /// @param token The address of the ZuvuToken contract
     function setTokenAddress(address token) public onlyOwner {
-        require(!tokenAddressSet, "Token address already set");
+        require(tokenAddressSet == false, "Token address already set");
         zuvuToken = IZuvuToken(token);
         tokenAddressSet = true;
     }
@@ -115,7 +115,7 @@ contract Submission is Ownable {
 
     /// @notice permits the submission author to claim the reward
     function claimReward() public isSubmissionRegistered(msg.sender) {
-        require(submissionRewards[msg.sender] >= 0);
+        require(submissionRewards[msg.sender] > 0, "No rewards");
         uint256 reward = submissionRewards[msg.sender];
         submissionRewards[msg.sender] = 0;
         zuvuToken.transfer(msg.sender, reward);

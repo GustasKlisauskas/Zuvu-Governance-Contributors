@@ -24,9 +24,14 @@ contract ZuvuToken is ERC20, Ownable {
     bool isSubmissionSet = false;
 
     modifier governanceContractSet() {
+        require(isGovernanceSet);
         _;
     }
 
+    modifier submissionContractSet() {
+        require(isSubmissionSet);
+        _;
+    }
     constructor() ERC20("ZuvuToken", "ZUV") Ownable(msg.sender) {
         lastMintTimestamp = block.timestamp;
     }
@@ -51,7 +56,7 @@ contract ZuvuToken is ERC20, Ownable {
 
     /// @notice Mints rewards and distributes them to stakers
     /// @dev Can only be called after the minting interval has passed
-    function mintRewards() external governanceContractSet() {
+    function mintRewards() external governanceContractSet submissionContractSet {
         require(isGovernanceSet, "Governance contract not set");
         require(isSubmissionSet, "Submission contract not set");
 

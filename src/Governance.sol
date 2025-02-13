@@ -83,7 +83,7 @@ contract Governance is IGovernance, Ownable {
     /// @dev Can only be called by the owner and only once
     /// @param token The address of the ZuvuToken contract
     function setTokenAddress(address token) public onlyOwner {
-        require(!tokenAddressSet, "Token address already set");
+        require(tokenAddressSet == false, "Token address already set");
         zuvuToken = IZuvuToken(token);
         tokenAddressSet = true;
     }
@@ -213,10 +213,10 @@ contract Governance is IGovernance, Ownable {
         }
 
         //TODO: check if needed and remove when deploying
-        if(otherSubmissionsTotalVote > 100) {
-            killSwitch = true;
-            revert("THIS ASSERT SHOULD NEVER HAPPEN, TOTAL SUBMISION VOTE SHOULD NEVER BE > 100");
-        }
+        //if(otherSubmissionsTotalVote > 100) {
+        //    killSwitch = true;
+        //    revert("THIS ASSERT SHOULD NEVER HAPPEN, TOTAL SUBMISION VOTE SHOULD NEVER BE > 100");
+        //}
 
         require(otherSubmissionsTotalVote + submissionVote <= 100, "The total submision vote would exceed 100%");
         
@@ -311,7 +311,7 @@ contract Governance is IGovernance, Ownable {
                 }
             }
 
-            quickSortVotes(governorVotes, 0, int256(uint256(voteAmount) - 1)); 
+            qsortVote(governorVotes, 0, int256(uint256(voteAmount) - 1)); 
             
             // Calculate the weighted median vote for the submission
             uint256 halfTotalStake = totalStake/2;

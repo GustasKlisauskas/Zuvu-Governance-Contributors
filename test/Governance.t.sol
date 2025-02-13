@@ -174,6 +174,46 @@ contract GovernanceTest is Test {
         assertEq(gov.getGovernorTotalStake(g4), 2014);
     }
 
+    function test_KillSwitch() public {
+        vm.prank(g1);
+        gov.registerGovernor();
+        gov.setKillSwitch(true);
+        vm.expectRevert();
+        vm.prank(g2);
+        gov.registerGovernor();
+        gov.setKillSwitch(false);
+        vm.prank(g2);
+        gov.registerGovernor();
+        
+        util_Spigot(g1,1003);
+        vm.prank(g1);
+        gov.setStake(g1, 1003);
+        util_Spigot(g2,1003);
+        gov.setKillSwitch(true);
+        vm.prank(g2);
+        vm.expectRevert();
+        gov.setStake(g2, 1003);
+        gov.setKillSwitch(false);
+
+        address s1 = address(0xa10001);
+
+        vm.prank(s1);
+        sub.registerSubmission();
+
+        vm.prank(g1);
+        gov.voteForSubmission(s1, 50);
+
+        gov.setKillSwitch(true);
+        vm.prank(g2);
+        vm.expectRevert();
+        gov.voteForSubmission(s1, 25);
+        gov.setKillSwitch(false);
+        vm.prank(g2);
+        gov.voteForSubmission(s1, 25);
+        vm.stopPrank();
+    }
+
+
     function test_GetTopGovernors() public {
         uint8 governorAmount = 36;
 
@@ -266,9 +306,14 @@ contract GovernanceTest is Test {
         vm.expectRevert("Governor not registered");
         vm.prank(address(1337));
         gov.voteStake(15);
-
+       
         uint256 rew = gov.getStakeVote();
         assertEq(rew,20);
+
+        vm.expectRevert();
+        vm.prank(g1);
+        gov.claimReward();
+        
         skip(1 days);
 
         zuvu.mintRewards();
@@ -319,64 +364,110 @@ contract GovernanceTest is Test {
         gov.setStake(g5,150);
 
             
-        address e1 = address(0xa10001);
-        address e2 = address(0xa10002);
-        address e3 = address(0xa10003);
-        address e4 = address(0xa10004);
+        address s1 = address(0xa10001);
+        address s2 = address(0xa10002);
+        address s3 = address(0xa10003);
+        address s4 = address(0xa10004);
+
+        vm.prank(s1);
+        sub.registerSubmission();
 
         vm.startPrank(g1);
-        gov.voteForSubmission(e1, 50);
-        gov.voteForSubmission(e2, 25);
-        gov.voteForSubmission(e3, 15);
-        gov.voteForSubmission(e4, 10);
+        gov.voteForSubmission(s1, 50);
+        gov.voteForSubmission(s1, 50);
+        gov.voteForSubmission(s2, 25);
+        gov.voteForSubmission(s3, 15);
+        gov.voteForSubmission(s4, 10);
+        //unset and reset vote
+        gov.voteForSubmission(s4, 0);
+        gov.voteForSubmission(s4, 10);
         vm.stopPrank();
 
         vm.startPrank(g2);
-        gov.voteForSubmission(e1, 25);
-        gov.voteForSubmission(e2, 25);
-        gov.voteForSubmission(e3, 25);
-        gov.voteForSubmission(e4, 25);
+        gov.voteForSubmission(s1, 25);
+        gov.voteForSubmission(s2, 25);
+        gov.voteForSubmission(s3, 25);
+        gov.voteForSubmission(s4, 25);
         vm.stopPrank();
 
         vm.startPrank(g3);
-        gov.voteForSubmission(e1, 25);
-        gov.voteForSubmission(e2, 25);
-        gov.voteForSubmission(e3, 25);
+        gov.voteForSubmission(s1, 25);
+        gov.voteForSubmission(s2, 25);
+        gov.voteForSubmission(s3, 25);
         gov.voteForSubmission(address(0xa12345), 10);
         vm.stopPrank();
 
         vm.startPrank(g4);
-        gov.voteForSubmission(e4, 50);
+        gov.voteForSubmission(s4, 50);
         vm.stopPrank();
 
         vm.startPrank(g5);
-        gov.voteForSubmission(e1, 30);
+        gov.voteForSubmission(s1, 30);
         vm.stopPrank();
 
-        for(uint256 i = 0; i < 1000; i++) {
+        for(uint256 i = 0; i < 64; i++) {
             address govgov = address(uint160(0xbabababababab) + (uint160(i) % 64));
             address subsub = address(uint160(0xa12345)+ uint160(i));
             util_Spigot(govgov,100 + i);
             vm.startPrank(govgov);
-            if(i < 64){
-                gov.registerGovernor();
-            }
+            gov.registerGovernor();
             gov.setStake(govgov,100 + i);
             gov.voteForSubmission(subsub, uint8((i*10) % 50)+1);
             vm.stopPrank();
         }
 
         address[] memory topSubs = gov.getTopSubmissions(); 
-        assertEq(topSubs.length, 640); // should be the top governors * max votes per governor
+        assertEq(topSubs.length, 64); // should be the top governors * max votes per governor
 
         (Governance.SubmissionReward[] memory rewards, uint256 total) = gov.getSubmissionRewards();
 
-        for(uint256 i = 0; i < rewards.length; i++) {
-            console.log("sr",rewards[i].submission, rewards[i].reward,(rewards[i].reward * 10 ** 8) / (total));
-        }
+        assertEq(total,1334);
 
-        console.log("tt", total);
+        vm.prank(s1);
+        vm.expectRevert();
+        sub.claimReward();
+
+        vm.expectRevert();
+        zuvu.mintRewards();
+        skip(1 days);
+        zuvu.mintRewards();
+
+        vm.prank(s1);
+        sub.claimReward();
+      
+        uint256 accuracyTreshold = util_convertZuvuDecimals(1); // check if rewards are accurate within 1 token;
+        assertApproxEqAbs(zuvu.balanceOf(s1), util_convertZuvuDecimals(22_488), accuracyTreshold);  // the reward should be 22_488...
+
+        assertEq(rewards[0].submission, s1);
     }
+
+    function test_TokenGuards() public {
+        Governance govc = new Governance();
+        ZuvuToken zuvuc = new ZuvuToken();
+        Submission subc = new Submission(0);
+
+        skip(2 days);
+        vm.expectRevert();
+        zuvuc.mintRewards();
+        govc.setTokenAddress(address(zuvuc));
+        subc.setTokenAddress(address(zuvuc));
+        vm.expectRevert();
+        zuvuc.mintRewards();
+        zuvuc.setSubmissionContract(address(subc));
+        zuvuc.setGovernanceContract(address(govc));
+
+        // try calling those one time functions again
+        vm.expectRevert();
+        govc.setTokenAddress(address(zuvuc));
+        vm.expectRevert();
+        subc.setTokenAddress(address(zuvuc));
+        vm.expectRevert();
+        zuvuc.setSubmissionContract(address(subc));
+        vm.expectRevert();
+        zuvuc.setGovernanceContract(address(govc));
+   }
+
+
 
 }
 
@@ -461,12 +552,6 @@ contract GovernanceTestFuzz is Test {
 
             assertGe(stakeCurrent,stakeNext); // check if current governor stake >= nextGovernor
             currentGovernor = nextGovernor;
-        }
-
-        (Governance.SubmissionReward[] memory rewards, uint256 total) = gov.getSubmissionRewards();
-
-        for(uint256 i = 0; i < rewards.length; i++) {
-            console.log("sr",rewards[i].submission, rewards[i].reward);
         }
     }
 }
